@@ -408,8 +408,8 @@ func (h *WebsocketHandler) handleUpgradeRequest(w http.ResponseWriter, r *http.R
 			}
 		}
 
-		// Export the token from the initial payload to the request header
-		if fromInitialPayloadConfig.ExportToken.Enabled {
+		// Export the token from the initial payload to the request header if payload is provided.
+		if fromInitialPayloadConfig.ExportToken.Enabled && len(handler.initialPayload) > 0 {
 			var initialPayloadMap map[string]any
 			err := json.Unmarshal(handler.initialPayload, &initialPayloadMap)
 			if err != nil {
@@ -418,15 +418,17 @@ func (h *WebsocketHandler) handleUpgradeRequest(w http.ResponseWriter, r *http.R
 				handler.Close(false, wsproto.CloseKindNormal)
 				return
 			}
-			jwtToken, ok := initialPayloadMap[fromInitialPayloadConfig.Key].(string)
-			if !ok {
-				err := fmt.Errorf("invalid JWT token in initial payload: JWT token is not a string")
-				requestLogger.Error(err.Error())
-				_ = handler.writeErrorMessage(requestID, err)
-				handler.Close(false, wsproto.CloseKindNormal)
-				return
+			if rawToken, exists := initialPayloadMap[fromInitialPayloadConfig.Key]; exists {
+				jwtToken, ok := rawToken.(string)
+				if !ok {
+					err := fmt.Errorf("invalid JWT token in initial payload: JWT token is not a string")
+					requestLogger.Error(err.Error())
+					_ = handler.writeErrorMessage(requestID, err)
+					handler.Close(false, wsproto.CloseKindNormal)
+					return
+				}
+				handler.request.Header.Set(fromInitialPayloadConfig.ExportToken.HeaderKey, jwtToken)
 			}
-			handler.request.Header.Set(fromInitialPayloadConfig.ExportToken.HeaderKey, jwtToken)
 		}
 
 		requestContext.expressionContext.Request.Auth = expr.LoadAuth(handler.request.Context())
