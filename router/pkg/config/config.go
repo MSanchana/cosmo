@@ -583,9 +583,10 @@ type NatsAuthentication struct {
 }
 
 type NatsEventSource struct {
-	ID             string              `yaml:"id,omitempty"`
-	URL            string              `yaml:"url,omitempty"`
-	Authentication *NatsAuthentication `yaml:"authentication,omitempty"`
+	ID                     string              `yaml:"id,omitempty"`
+	URL                    string              `yaml:"url,omitempty"`
+	Authentication         *NatsAuthentication `yaml:"authentication,omitempty"`
+	SubscriptionBufferSize int                 `yaml:"subscription_buffer_size,omitempty" envDefault:"1024"`
 }
 
 func (n NatsEventSource) GetID() string {
