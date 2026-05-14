@@ -22,6 +22,8 @@ const (
 	natsReceive = "receive"
 )
 
+const defaultSubscriptionBufferSize = 1024
+
 // Adapter defines the methods that a NATS adapter should implement
 type Adapter interface {
 	datasource.Adapter
@@ -56,7 +58,8 @@ type ProviderAdapter struct {
 	// options enable retry-on-failed-connect with unlimited reconnects, and Startup reports
 	// a connection error without aborting so the router can keep running while the client
 	// reconnects in the background.
-	skipUnavailable bool
+	skipUnavailable        bool
+	subscriptionBufferSize int
 }
 
 // getInstanceIdentifier returns an identifier for the current instance.
@@ -179,7 +182,7 @@ func (p *ProviderAdapter) Subscribe(ctx context.Context, cfg datasource.Subscrip
 		return nil
 	}
 
-	msgChan := make(chan *nats.Msg, 1024)
+	msgChan := make(chan *nats.Msg, p.subscriptionBufferSize)
 	subscriptions := make([]*nats.Subscription, len(subConf.Subjects))
 	for i, subject := range subConf.Subjects {
 		subscription, err := p.client.ChanSubscribe(subject, msgChan)
@@ -505,7 +508,7 @@ func (p *ProviderAdapter) deleteDurableConsumers(ctx context.Context) {
 	})
 }
 
-func NewAdapter(ctx context.Context, logger *zap.Logger, url string, opts []nats.Option, hostName string, routerListenAddr string, deleteConsumersOnShutdown bool, providerOpts datasource.ProviderOpts) (Adapter, error) {
+func NewAdapter(ctx context.Context, logger *zap.Logger, url string, opts []nats.Option, hostName string, routerListenAddr string, deleteConsumersOnShutdown bool, subscriptionBufferSize int, providerOpts datasource.ProviderOpts) (Adapter, error) {
 	if logger == nil {
 		logger = zap.NewNop()
 	}
@@ -517,19 +520,24 @@ func NewAdapter(ctx context.Context, logger *zap.Logger, url string, opts []nats
 		store = metric.NewNoopStreamMetricStore()
 	}
 
+	if subscriptionBufferSize <= 0 {
+		subscriptionBufferSize = defaultSubscriptionBufferSize
+	}
+
 	ctx, cancelFunc := context.WithCancel(ctx)
 
 	return &ProviderAdapter{
-		ctx:               ctx,
-		cancel:            cancelFunc,
-		logger:            logger.With(zap.String("pubsub", "nats")),
-		closeWg:           sync.WaitGroup{},
-		hostName:          hostName,
-		routerListenAddr:  routerListenAddr,
-		url:               url,
-		opts:              opts,
-		flushTimeout:      10 * time.Second,
-		streamMetricStore: store,
+		ctx:                    ctx,
+		cancel:                 cancelFunc,
+		logger:                 logger.With(zap.String("pubsub", "nats")),
+		closeWg:                sync.WaitGroup{},
+		hostName:               hostName,
+		routerListenAddr:       routerListenAddr,
+		url:                    url,
+		opts:                   opts,
+		flushTimeout:           10 * time.Second,
+		streamMetricStore:      store,
+		subscriptionBufferSize: subscriptionBufferSize,
 		consumerConfig: consumerConfig{
 			deleteOnShutdown: deleteConsumersOnShutdown,
 		},
