@@ -22,8 +22,6 @@ const (
 	natsReceive = "receive"
 )
 
-const defaultSubscriptionBufferSize = 1024
-
 // Adapter defines the methods that a NATS adapter should implement
 type Adapter interface {
 	datasource.Adapter
@@ -493,10 +491,6 @@ func NewAdapter(ctx context.Context, logger *zap.Logger, url string, opts []nats
 		store = providerOpts.StreamMetricStore
 	} else {
 		store = metric.NewNoopStreamMetricStore()
-	}
-
-	if subscriptionBufferSize <= 0 {
-		subscriptionBufferSize = defaultSubscriptionBufferSize
 	}
 
 	ctx, cancelFunc := context.WithCancel(ctx)
