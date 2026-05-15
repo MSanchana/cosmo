@@ -92,10 +92,34 @@ func buildNatsOptions(eventSource config.NatsEventSource, logger *zap.Logger) ([
 		}),
 		nats.ErrorHandler(func(conn *nats.Conn, subscription *nats.Subscription, err error) {
 			if errors.Is(err, nats.ErrSlowConsumer) {
-				logger.Warn(
-					"NATS slow consumer detected. Events are being dropped. Please consider increasing the buffer size or reducing the number of messages being sent.",
+				fields := []zap.Field{
 					zap.Error(err),
 					zap.String("provider_id", eventSource.ID),
+				}
+				if subscription != nil {
+					fields = append(fields,
+						zap.String("subject", subscription.Subject),
+						zap.String("queue", subscription.Queue),
+					)
+					if pendingMsgs, pendingBytes, perr := subscription.Pending(); perr == nil {
+						fields = append(fields,
+							zap.Int("pending_msgs", pendingMsgs),
+							zap.Int("pending_bytes", pendingBytes),
+						)
+					}
+					if maxPendingMsgs, maxPendingBytes, perr := subscription.MaxPending(); perr == nil {
+						fields = append(fields,
+							zap.Int("max_pending_msgs", maxPendingMsgs),
+							zap.Int("max_pending_bytes", maxPendingBytes),
+						)
+					}
+					if droppedMsgs, derr := subscription.Dropped(); derr == nil {
+						fields = append(fields, zap.Int("dropped_msgs", droppedMsgs))
+					}
+				}
+				logger.Warn(
+					"NATS slow consumer detected. Events are being dropped. Please consider increasing the buffer size or reducing the number of messages being sent.",
+					fields...,
 				)
 			} else {
 				logger.Error("NATS error", zap.Error(err))
@@ -123,7 +147,7 @@ func buildProvider(ctx context.Context, provider config.NatsEventSource, logger 
 		return nil, fmt.Errorf("failed to build options for Nats provider with ID \"%s\": %w", provider.ID, err)
 	}
 
-	adapter, err := NewAdapter(ctx, logger, provider.URL, options, hostName, routerListenAddr, providerOpts)
+	adapter, err := NewAdapter(ctx, logger, provider.URL, options, hostName, routerListenAddr, provider.SubscriptionBufferSize, providerOpts)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create adapter for Nats provider with ID \"%s\": %w", provider.ID, err)
 	}
