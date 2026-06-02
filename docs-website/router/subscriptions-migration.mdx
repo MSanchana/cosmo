@@ -4,7 +4,7 @@ description: "Migration guide for the subscriptions overhaul. Covers the three b
 icon: "arrows-turn-right"
 ---
 
-This release ships three behavioral changes alongside configuration renames. Each behavioral change is documented in its reference page; this guide links to those and summarizes what an upgrader needs to check.
+The [router@0.313.0 subscription overhaul release](https://github.com/wundergraph/cosmo/releases/tag/router%400.313.0) ships three behavioral changes alongside configuration renames. Each behavioral change is documented in its reference page; this guide links to those and summarizes what an upgrader needs to check.
 
 The router's WebSocket protocol behavior is a strict superset of the `graphql-transport-ws` and `graphql-ws` specifications. Spec-compliant clients are unaffected by the spec-fix change below. The other two changes may require adjustments.
 
@@ -24,7 +24,7 @@ The router now emits a per-subscription GraphQL error and terminates that subscr
 
 **Action for clients:** if your client detected upstream subgraph failures by observing a WebSocket close with code `1001`, inspect the GraphQL error `code` extension instead. Reconnect logic that previously operated at the whole-connection level may need to move to individual subscriptions.
 
-See [Subgraph Error Propagation - Upstream WebSocket errors during subscriptions](/router/subgraph-error-propagation#upstream-websocket-errors-during-subscriptions) for the new behavior and example payloads.
+See [Subgraph Error Propagation - Upstream WebSocket errors during subscriptions](/router/subgraph-data-propagation/subgraph-error-propagation#upstream-websocket-errors-during-subscriptions) for the new behavior and example payloads.
 
 ## `complete` is no longer sent after `error` on `graphql-transport-ws`
 

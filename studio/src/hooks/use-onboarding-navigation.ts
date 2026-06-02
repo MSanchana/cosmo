@@ -29,8 +29,6 @@ export const useOnboardingNavigation = () => {
       setOnboarding({
         finishedAt: data.finishedAt ? new Date(data.finishedAt) : undefined,
         federatedGraphsCount: data.federatedGraphsCount,
-        slack: data.slack,
-        email: data.email,
       });
     },
     [initialLoadSuccess, data, setOnboarding],
@@ -38,6 +36,10 @@ export const useOnboardingNavigation = () => {
 
   useEffect(
     function handleNavigationToOnboarding() {
+      // Do not redirect if feature flag is off
+      if (!enabled) {
+        return;
+      }
       // Wait for the onboarding metadata query to resolve
       // Do not initiate redirect if we fail to fetch onboarding metadata. Fail silently in background.
       if (initialLoadSuccess === null || !initialLoadSuccess) {
