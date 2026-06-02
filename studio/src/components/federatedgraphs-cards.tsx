@@ -1,64 +1,51 @@
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { useFireworks } from "@/hooks/use-fireworks";
-import { SubmitHandler, useZodForm } from "@/hooks/use-form";
-import { docsBaseURL } from "@/lib/constants";
-import { formatMetric } from "@/lib/format-metric";
-import { useChartData } from "@/lib/insights-helpers";
-import { cn } from "@/lib/utils";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { useFireworks } from '@/hooks/use-fireworks';
+import { SubmitHandler, useZodForm } from '@/hooks/use-form';
+import { docsBaseURL } from '@/lib/constants';
+import { formatMetric } from '@/lib/format-metric';
+import { useChartData } from '@/lib/insights-helpers';
+import { cn } from '@/lib/utils';
 import {
+  BoltIcon,
+  BookmarkIcon,
   ChevronDoubleRightIcon,
   CommandLineIcon,
   DocumentArrowDownIcon,
-} from "@heroicons/react/24/outline";
-import { Component2Icon } from "@radix-ui/react-icons";
-import { EnumStatusCode } from "@wundergraph/cosmo-connect/dist/common/common_pb";
-import { migrateFromApollo } from "@wundergraph/cosmo-connect/dist/platform/v1/platform-PlatformService_connectquery";
-import { FederatedGraph } from "@wundergraph/cosmo-connect/dist/platform/v1/platform_pb";
-import copy from "copy-to-clipboard";
-import { getTime, parseISO, subDays } from "date-fns";
-import Link from "next/link";
-import { useRouter } from "next/router";
-import {
-  Dispatch,
-  SetStateAction,
-  useContext,
-  useEffect,
-  useState,
-} from "react";
-import { FiCheck, FiCopy } from "react-icons/fi";
-import { LuSquareDot } from "react-icons/lu";
-import { MdNearbyError } from "react-icons/md";
-import { SiApollographql } from "react-icons/si";
-import { Line, LineChart, ResponsiveContainer, XAxis } from "recharts";
-import { z } from "zod";
-import { UserContext } from "./app-provider";
-import { ComposeStatusMessage } from "./compose-status";
-import { ComposeStatusBulb } from "./compose-status-bulb";
-import { EmptyState } from "./empty-state";
-import { Logo } from "./logo";
-import { TimeAgo } from "./time-ago";
-import { Button } from "./ui/button";
-import { Card } from "./ui/card";
-import { CLI } from "./ui/cli";
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
-} from "./ui/dialog";
-import { Input } from "./ui/input";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-} from "./ui/tooltip";
-import { useToast } from "./ui/use-toast";
-import { useMutation } from "@connectrpc/connect-query";
-import { useCheckUserAccess } from "@/hooks/use-check-user-access";
-import { useWorkspace } from "@/hooks/use-workspace";
-import { useCurrentOrganization } from "@/hooks/use-current-organization";
+  ExclamationTriangleIcon,
+} from '@heroicons/react/24/outline';
+import { Component2Icon } from '@radix-ui/react-icons';
+import { EnumStatusCode } from '@wundergraph/cosmo-connect/dist/common/common_pb';
+import { migrateFromApollo } from '@wundergraph/cosmo-connect/dist/platform/v1/platform-PlatformService_connectquery';
+import { FederatedGraph } from '@wundergraph/cosmo-connect/dist/platform/v1/platform_pb';
+import copy from 'copy-to-clipboard';
+import { getTime, parseISO, subDays } from 'date-fns';
+import Link from 'next/link';
+import { useRouter } from 'next/router';
+import { Dispatch, SetStateAction, useContext, useEffect, useState } from 'react';
+import { FiCheck, FiCopy } from 'react-icons/fi';
+import { LuSquareDot } from 'react-icons/lu';
+import { MdNearbyError } from 'react-icons/md';
+import { SiApollographql } from 'react-icons/si';
+import { Line, LineChart, ResponsiveContainer, XAxis } from 'recharts';
+import { z } from 'zod';
+import { UserContext } from './app-provider';
+import { ComposeStatusMessage } from './compose-status';
+import { ComposeStatusBulb } from './compose-status-bulb';
+import { EmptyState } from './empty-state';
+import { Logo } from './logo';
+import { TimeAgo } from './time-ago';
+import { Button } from './ui/button';
+import { Card } from './ui/card';
+import { CLI } from './ui/cli';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from './ui/dialog';
+import { Input } from './ui/input';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from './ui/tooltip';
+import { useToast } from './ui/use-toast';
+import { useMutation } from '@connectrpc/connect-query';
+import { useCheckUserAccess } from '@/hooks/use-check-user-access';
+import { useWorkspace } from '@/hooks/use-workspace';
+import { useCurrentOrganization } from '@/hooks/use-current-organization';
+import { useOnboarding } from '@/hooks/use-onboarding';
 
 // this is required to render a blank line with LineChart
 const fallbackData = [
@@ -88,17 +75,15 @@ const MigrationDialog = ({
   isEmptyState?: boolean;
 }) => {
   const router = useRouter();
-  const { namespace: { name: namespace } } = useWorkspace();
+  const {
+    namespace: { name: namespace },
+  } = useWorkspace();
   const organizationSlug = useCurrentOrganization()?.slug;
   const migrate = !!router.query.migrate;
 
   const migrateInputSchema = z.object({
-    apiKey: z
-      .string()
-      .min(1, { message: "API Key must contain at least 1 character." }),
-    variantName: z
-      .string()
-      .min(1, { message: "Variant name must contain at least 1 character." }),
+    apiKey: z.string().min(1, { message: 'API Key must contain at least 1 character.' }),
+    variantName: z.string().min(1, { message: 'Variant name must contain at least 1 character.' }),
   });
 
   type MigrateInput = z.infer<typeof migrateInputSchema>;
@@ -109,7 +94,7 @@ const MigrationDialog = ({
     handleSubmit,
     reset,
   } = useZodForm<MigrateInput>({
-    mode: "onBlur",
+    mode: 'onBlur',
     schema: migrateInputSchema,
   });
 
@@ -135,7 +120,7 @@ const MigrationDialog = ({
             d.response?.code === EnumStatusCode.ERR_SUBGRAPH_COMPOSITION_FAILED
           ) {
             toast({
-              description: "Successfully migrated the graph.",
+              description: 'Successfully migrated the graph.',
               duration: 2000,
             });
             refetch();
@@ -149,7 +134,7 @@ const MigrationDialog = ({
         },
         onError: (_) => {
           toast({
-            description: "Could not migrate the graph. Please try again.",
+            description: 'Could not migrate the graph. Please try again.',
             duration: 3000,
           });
           setOpen(false);
@@ -165,7 +150,7 @@ const MigrationDialog = ({
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger
         className={cn({
-          "min-h-[254px]": !isEmptyState,
+          'min-h-[254px]': !isEmptyState,
         })}
       >
         <Card className="flex h-full flex-col justify-center gap-y-2 bg-transparent p-4 group-hover:border-ring dark:hover:border-input-active ">
@@ -187,61 +172,40 @@ const MigrationDialog = ({
             </DialogHeader>
             <div className="flex flex-col gap-y-2">
               <p className="text-sm">
-                The Graph API Key is the api key associated to the graph which
-                has to be migrated and it should be obtained from Apollo Studio.
+                The Graph API Key is the api key associated to the graph which has to be migrated and it should be
+                obtained from Apollo Studio.
               </p>
               <p className="text-sm">
-                Click{" "}
+                Click{' '}
                 <Link
-                  href={docsBaseURL + "/studio/migrate-from-apollo"}
+                  href={docsBaseURL + '/studio/migrate-from-apollo'}
                   className="text-primary"
                   target="_blank"
                   rel="noreferrer"
                 >
                   here
-                </Link>{" "}
+                </Link>{' '}
                 to find the steps to obtain the key.
               </p>
               <p className="text-sm text-teal-400">
-                Note: This key is not stored and only used to fetch the
-                subgraphs.
+                Note: This key is not stored and only used to fetch the subgraphs.
               </p>
             </div>
-            <form
-              className="mt-2 flex flex-col gap-y-3"
-              onSubmit={handleSubmit(onSubmit)}
-            >
+            <form className="mt-2 flex flex-col gap-y-3" onSubmit={handleSubmit(onSubmit)}>
               <div className="flex flex-col gap-y-2">
                 <span className="text-sm font-semibold">Graph API Key</span>
-                <Input className="w-full" type="text" {...register("apiKey")} />
-                {errors.apiKey && (
-                  <span className="px-2 text-xs text-destructive">
-                    {errors.apiKey.message}
-                  </span>
-                )}
+                <Input className="w-full" type="text" {...register('apiKey')} />
+                {errors.apiKey && <span className="px-2 text-xs text-destructive">{errors.apiKey.message}</span>}
               </div>
               <div className="flex flex-col gap-y-2">
-                <span className="text-sm font-semibold">
-                  Graph Variant Name
-                </span>
-                <Input
-                  className="w-full"
-                  type="text"
-                  {...register("variantName")}
-                />
+                <span className="text-sm font-semibold">Graph Variant Name</span>
+                <Input className="w-full" type="text" {...register('variantName')} />
                 {errors.variantName && (
-                  <span className="px-2 text-xs text-destructive">
-                    {errors.variantName.message}
-                  </span>
+                  <span className="px-2 text-xs text-destructive">{errors.variantName.message}</span>
                 )}
               </div>
 
-              <Button
-                className="mt-2"
-                type="submit"
-                disabled={!isValid}
-                variant="default"
-              >
+              <Button className="mt-2" type="submit" disabled={!isValid} variant="default">
                 Migrate
               </Button>
             </form>
@@ -296,7 +260,7 @@ export const RunRouterCommand = ({
   -e DEV_MODE=true \\
   -e DEMO_MODE=true \\
   -e LISTEN_ADDR=0.0.0.0:3002 \\
-  -e GRAPH_API_TOKEN=${token ? token : "<graph-api-token>"} \\
+  -e GRAPH_API_TOKEN=${token ? token : '<graph-api-token>'} \\
   ghcr.io/wundergraph/cosmo/router:latest`;
 
   const dockerRunCmdElement = (
@@ -313,23 +277,14 @@ export const RunRouterCommand = ({
       <span>
         <span>{`  -e GRAPH_API_TOKEN=`}</span>
         <span>
-          {token ? (
-            token
-          ) : (
-            <span className="font-bold text-secondary-foreground">
-              {"<graph-api-token>"}
-            </span>
-          )}{" "}
-          \
+          {token ? token : <span className="font-bold text-secondary-foreground">{'<graph-api-token>'}</span>} \
         </span>
       </span>
       <span>{`  ghcr.io/wundergraph/cosmo/router:latest`}</span>
     </div>
   );
 
-  const createTokenCommand = `npx wgc router token create <name> ${
-    namespace ? `-n ${namespace}` : ""
-  } -g ${graphName}`;
+  const createTokenCommand = `npx wgc router token create <name> ${namespace ? `-n ${namespace}` : ''} -g ${graphName}`;
 
   const [copyDockerCommand, setCopyDockerCommand] = useState(false);
   const [copyTokenCommand, setCopyTokenCommand] = useState(false);
@@ -377,7 +332,7 @@ export const RunRouterCommand = ({
               <p className="pb-2 text-sm">
                 {`1. Create a Graph API Token using the below command. `}
                 <Link
-                  href={docsBaseURL + "/cli/router/token/create"}
+                  href={docsBaseURL + '/cli/router/token/create'}
                   className="text-sm text-primary"
                   target="_blank"
                   rel="noreferrer"
@@ -388,10 +343,8 @@ export const RunRouterCommand = ({
               <div className="flex items-center justify-between rounded border border-input bg-background p-4">
                 <code className="break-word whitespace-pre-wrap rounded font-mono text-xs leading-normal text-muted-foreground">
                   {`npx wgc router token create `}
-                  <span className="font-bold text-secondary-foreground">
-                    {"<name>"}
-                  </span>
-                  {` ${namespace ? `-n ${namespace}` : ""} -g ${graphName}`}
+                  <span className="font-bold text-secondary-foreground">{'<name>'}</span>
+                  {` ${namespace ? `-n ${namespace}` : ''} -g ${graphName}`}
                 </code>
                 <Button
                   asChild={true}
@@ -400,13 +353,7 @@ export const RunRouterCommand = ({
                   onClick={() => setCopyTokenCommand(true)}
                   className="cursor-pointer"
                 >
-                  <div>
-                    {copyTokenCommand ? (
-                      <FiCheck className="text-xs" />
-                    ) : (
-                      <FiCopy className="text-xs" />
-                    )}
-                  </div>
+                  <div>{copyTokenCommand ? <FiCheck className="text-xs" /> : <FiCopy className="text-xs" />}</div>
                 </Button>
               </div>
             </div>
@@ -414,11 +361,11 @@ export const RunRouterCommand = ({
           <div>
             <p className="pb-2 text-sm">
               {token
-                ? "Use the below command to initiate the router. "
+                ? 'Use the below command to initiate the router. '
                 : `2. Pass the token as GRAPH_API_TOKEN and run the below command to initiate the
               router. `}
               <Link
-                href={docsBaseURL + "/router/deployment"}
+                href={docsBaseURL + '/router/deployment'}
                 className="text-sm text-primary"
                 target="_blank"
                 rel="noreferrer"
@@ -437,18 +384,10 @@ export const RunRouterCommand = ({
                 onClick={() => setCopyDockerCommand(true)}
                 className="cursor-pointer"
               >
-                <div>
-                  {copyDockerCommand ? (
-                    <FiCheck className="text-xs" />
-                  ) : (
-                    <FiCopy className="text-xs" />
-                  )}
-                </div>
+                <div>{copyDockerCommand ? <FiCheck className="text-xs" /> : <FiCopy className="text-xs" />}</div>
               </Button>
             </div>
-            {hint && (
-              <p className="mt-2 text-xs text-muted-foreground">{`Hint: ${hint}`}</p>
-            )}
+            {hint && <p className="mt-2 text-xs text-muted-foreground">{`Hint: ${hint}`}</p>}
           </div>
         </div>
       </DialogContent>
@@ -470,9 +409,11 @@ export const Empty = ({
   setIsMigrating: Dispatch<SetStateAction<boolean>>;
 }) => {
   const checkUserAccess = useCheckUserAccess();
-  const { namespace: { name: namespace } } = useWorkspace();
+  const {
+    namespace: { name: namespace },
+  } = useWorkspace();
 
-  let labels = "team=A";
+  let labels = 'team=A';
   return (
     <EmptyState
       className="h-auto"
@@ -480,24 +421,19 @@ export const Empty = ({
       title="No graphs found"
       description={
         <>
-          Use the CLI tool to create either a federated graph ({" "}
+          Use the CLI tool to create either a federated graph ({' '}
           <a
             target="_blank"
             rel="noreferrer"
-            href={docsBaseURL + "/cli/federated-graph/create"}
+            href={docsBaseURL + '/cli/federated-graph/create'}
             className="text-primary"
           >
             docs
-          </a>{" "}
-          ) or a monograph ({" "}
-          <a
-            target="_blank"
-            rel="noreferrer"
-            href={docsBaseURL + "/cli/monograph/create"}
-            className="text-primary"
-          >
+          </a>{' '}
+          ) or a monograph ({' '}
+          <a target="_blank" rel="noreferrer" href={docsBaseURL + '/cli/monograph/create'} className="text-primary">
             docs
-          </a>{" "}
+          </a>{' '}
           ).
         </>
       }
@@ -520,7 +456,7 @@ export const Empty = ({
             </TabsContent>
           </Tabs>
 
-          {checkUserAccess({ rolesToBe: ["organization-admin", "organization-developer"] }) && (
+          {checkUserAccess({ rolesToBe: ['organization-admin', 'organization-developer'] }) && (
             <>
               <span className="text-sm font-bold">OR</span>
               <MigrationDialog
@@ -539,31 +475,25 @@ export const Empty = ({
   );
 };
 
-const GraphCard = ({ graph }: { graph: FederatedGraph }) => {
+const GraphCard = ({ graph, hasStaleMetrics }: { graph: FederatedGraph; hasStaleMetrics: boolean }) => {
   const user = useContext(UserContext);
   const { data, ticks, domain, timeFormatter } = useChartData(
     4,
     graph.requestSeries.length > 0 ? graph.requestSeries : fallbackData,
   );
 
-  const totalRequests = graph.requestSeries.reduce(
-    (total, r) => total + r.totalRequests,
-    0,
-  );
+  const totalRequests = graph.requestSeries.reduce((total, r) => total + r.totalRequests, 0);
 
-  const totalErrors = graph.requestSeries.reduce(
-    (total, r) => total + r.erroredRequests,
-    0,
-  );
+  const totalErrors = graph.requestSeries.reduce((total, r) => total + r.erroredRequests, 0);
 
   const parsedURL = () => {
     try {
       if (!graph.routingURL) {
-        return "No endpoint provided";
+        return 'No endpoint provided';
       }
 
       const { host, pathname } = new URL(graph.routingURL);
-      return host + (pathname === "/" ? "" : pathname);
+      return host + (pathname === '/' ? '' : pathname);
     } catch {}
   };
 
@@ -580,7 +510,7 @@ const GraphCard = ({ graph }: { graph: FederatedGraph }) => {
                 type="monotone"
                 dataKey="totalRequests"
                 animationDuration={300}
-                stroke="#0284C7"
+                stroke={hasStaleMetrics ? 'hsl(var(--gray-100))' : '#0284C7'}
                 dot={false}
                 strokeWidth={1.5}
               />
@@ -596,21 +526,35 @@ const GraphCard = ({ graph }: { graph: FederatedGraph }) => {
             </LineChart>
           </ResponsiveContainer>
         </div>
-        <div className="flex w-full justify-end px-4 font-mono text-xs text-muted-foreground">
-          {`${formatMetric(totalRequests / (4 * 60))} RPM`}
-        </div>
+        {hasStaleMetrics ? (
+          <Tooltip delayDuration={100}>
+            <TooltipTrigger asChild>
+              <div
+                className="flex w-full items-center justify-end gap-1 px-4 font-mono text-xs text-gray-100"
+                tabIndex={0}
+                role="img"
+                aria-label="Analytics are not available at this moment"
+              >
+                <ExclamationTriangleIcon width={12} height={12} aria-hidden />
+                N/A
+              </div>
+            </TooltipTrigger>
+            <TooltipContent>Analytics are not available at this moment</TooltipContent>
+          </Tooltip>
+        ) : (
+          <div className="flex w-full justify-end px-4 font-mono text-xs text-muted-foreground">
+            {`${formatMetric(totalRequests / (4 * 60))} RPM`}
+          </div>
+        )}
 
         <div className="mt-3 flex flex-1 flex-col items-start px-6">
           <div className="text-base font-semibold">{graph.name}</div>
           <Tooltip delayDuration={100}>
             <TooltipTrigger asChild>
               <p
-                className={cn(
-                  "w-full truncate pt-1 text-xs text-gray-500 dark:text-gray-400",
-                  {
-                    italic: !graph.routingURL,
-                  },
-                )}
+                className={cn('w-full truncate pt-1 text-xs text-gray-500 dark:text-gray-400', {
+                  italic: !graph.routingURL,
+                })}
               >
                 {parsedURL()}
               </p>
@@ -627,7 +571,7 @@ const GraphCard = ({ graph }: { graph: FederatedGraph }) => {
               {graph.supportsFederation ? (
                 <p className="text-sm">
                   {`${formatMetric(graph.connectedSubgraphs)} ${
-                    graph.connectedSubgraphs === 1 ? "subgraph" : "subgraphs"
+                    graph.connectedSubgraphs === 1 ? 'subgraph' : 'subgraphs'
                   }`}
                 </p>
               ) : (
@@ -641,7 +585,7 @@ const GraphCard = ({ graph }: { graph: FederatedGraph }) => {
                   <div className="flex items-center gap-x-2">
                     <MdNearbyError className="h-4 w-4 text-destructive" />
                     <p className="text-sm">{`${formatMetric(totalErrors)} ${
-                      totalErrors === 1 ? "error" : "errors"
+                      totalErrors === 1 ? 'error' : 'errors'
                     }`}</p>
                   </div>
                 </TooltipTrigger>
@@ -669,14 +613,10 @@ const GraphCard = ({ graph }: { graph: FederatedGraph }) => {
                 <p className="ml-1 text-left text-muted-foreground">
                   {graph.lastUpdatedAt ? (
                     <>
-                      Schema last updated{" "}
-                      <TimeAgo
-                        date={getTime(parseISO(graph.lastUpdatedAt))}
-                        tooltip={false}
-                      />
+                      Schema last updated <TimeAgo date={getTime(parseISO(graph.lastUpdatedAt))} tooltip={false} />
                     </>
                   ) : (
-                    "Not ready"
+                    'Not ready'
                   )}
                 </p>
               </TooltipTrigger>
@@ -696,12 +636,56 @@ const GraphCard = ({ graph }: { graph: FederatedGraph }) => {
   );
 };
 
+function OnboardingEmptyState() {
+  const { onboarding, enabled, currentStep } = useOnboarding();
+
+  if (!enabled || !onboarding || onboarding.federatedGraphsCount !== 0) {
+    return null;
+  }
+
+  const emptyState =
+    currentStep !== undefined && !onboarding.finishedAt ? (
+      <EmptyState
+        className="h-auto"
+        icon={<BookmarkIcon />}
+        title="Dive right back in"
+        description="Want to finish the onboarding and create your first federated graph?"
+        actions={
+          <Button asChild>
+            <Link href={`/onboarding/${currentStep}`}>Continue</Link>
+          </Button>
+        }
+      />
+    ) : (
+      <EmptyState
+        className="h-auto"
+        icon={<BoltIcon />}
+        title="Need help?"
+        description="Take a quick 5-minute tour to help you set up your first federated graph"
+        actions={
+          <Button asChild>
+            <Link href={`/onboarding/1`}>Start here</Link>
+          </Button>
+        }
+      />
+    );
+
+  return (
+    <>
+      {emptyState}
+      <span className="text-sm font-bold">OR</span>
+    </>
+  );
+}
+
 export const FederatedGraphsCards = ({
   graphs,
   refetch,
+  hasStaleMetrics,
 }: {
   graphs?: FederatedGraph[];
   refetch: () => void;
+  hasStaleMetrics: boolean;
 }) => {
   const [isMigrationSuccess, setIsMigrationSuccess] = useState(false);
   const [token, setToken] = useState<string | undefined>();
@@ -717,13 +701,16 @@ export const FederatedGraphsCards = ({
 
   if (!graphs || graphs.length === 0)
     return (
-      <Empty
-        refetch={refetch}
-        setIsMigrationSuccess={setIsMigrationSuccess}
-        setToken={setToken}
-        isMigrating={isMigrating}
-        setIsMigrating={setIsMigrating}
-      />
+      <div className="flex flex-col items-center gap-y-8">
+        <OnboardingEmptyState />
+        <Empty
+          refetch={refetch}
+          setIsMigrationSuccess={setIsMigrationSuccess}
+          setToken={setToken}
+          isMigrating={isMigrating}
+          setIsMigrating={setIsMigrating}
+        />
+      </div>
     );
 
   return (
@@ -744,9 +731,9 @@ export const FederatedGraphsCards = ({
       )}
       <div className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-3">
         {graphs.map((graph, graphIndex) => {
-          return <GraphCard key={graphIndex.toString()} graph={graph} />;
+          return <GraphCard key={graphIndex.toString()} graph={graph} hasStaleMetrics={hasStaleMetrics} />;
         })}
-        {checkUserAccess({ rolesToBe: ["organization-admin", "organization-developer"] }) && (
+        {checkUserAccess({ rolesToBe: ['organization-admin', 'organization-developer'] }) && (
           <MigrationDialog
             refetch={refetch}
             setIsMigrationSuccess={setIsMigrationSuccess}

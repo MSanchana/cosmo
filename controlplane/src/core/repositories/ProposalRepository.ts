@@ -13,11 +13,13 @@ import {
 } from '../../types/index.js';
 import { getDiffBetweenGraphs } from '../composition/schemaCheck.js';
 import { isCheckSuccessful, normalizeLabels } from '../util.js';
+import { traced } from '../tracing.js';
 import { SchemaCheckRepository } from './SchemaCheckRepository.js';
 
 /**
  * Repository for organization related operations.
  */
+@traced
 export class ProposalRepository {
   constructor(
     private db: PostgresJsDatabase<typeof schema>,
@@ -450,7 +452,7 @@ export class ProposalRepository {
     return proposalConfig[0];
   }
 
-  public async getApprovedProposalSubgraphsBySubgraph({
+  public async getProposalSubgraphsBySubgraph({
     subgraphName,
     namespaceId,
   }: {
@@ -472,15 +474,15 @@ export class ProposalRepository {
       .where(
         and(
           eq(schema.proposalSubgraphs.subgraphName, subgraphName),
-          eq(schema.proposals.state, 'APPROVED'),
           eq(schema.targets.namespaceId, namespaceId),
+          eq(schema.targets.organizationId, this.organizationId),
         ),
       );
 
     return proposalSubgraphs;
   }
 
-  public async matchSchemaWithProposal({
+  public async matchSchemaWithProposals({
     subgraphName,
     namespaceId,
     schemaCheckId,
@@ -494,11 +496,13 @@ export class ProposalRepository {
     schemaSDL: string;
     routerCompatibilityVersion: string;
     isDeleted: boolean;
-  }): Promise<{ proposalId: string; proposalSubgraphId: string } | undefined> {
-    const proposalSubgraphs = await this.getApprovedProposalSubgraphsBySubgraph({
+  }): Promise<{ proposalId: string; proposalSubgraphId: string }[]> {
+    const proposalSubgraphs = await this.getProposalSubgraphsBySubgraph({
       subgraphName,
       namespaceId,
     });
+
+    const matches: { proposalId: string; proposalSubgraphId: string }[] = [];
 
     for (const proposalSubgraph of proposalSubgraphs) {
       if (proposalSubgraph.isDeleted && isDeleted) {
@@ -517,10 +521,11 @@ export class ProposalRepository {
               },
             });
         }
-        return {
+        matches.push({
           proposalId: proposalSubgraph.proposalId,
           proposalSubgraphId: proposalSubgraph.id,
-        };
+        });
+        continue;
       }
 
       if (!proposalSubgraph.proposedSchemaSDL) {
@@ -549,13 +554,13 @@ export class ProposalRepository {
       }
 
       if (schemaChanges.changes.length === 0) {
-        return {
+        matches.push({
           proposalId: proposalSubgraph.proposalId,
           proposalSubgraphId: proposalSubgraph.id,
-        };
+        });
       }
     }
-    return undefined;
+    return matches;
   }
 
   public async getLatestCheckForProposal(
@@ -583,6 +588,8 @@ export class ProposalRepository {
         hasLintErrors: schema.schemaChecks.hasLintErrors,
         hasGraphPruningErrors: schema.schemaChecks.hasGraphPruningErrors,
         clientTrafficCheckSkipped: schema.schemaChecks.clientTrafficCheckSkipped,
+        checkExtensionDeliveryId: schema.schemaChecks.checkExtensionDeliveryId,
+        checkExtensionErrorMessage: schema.schemaChecks.checkExtensionErrorMessage,
       })
       .from(schema.schemaChecks)
       .where(eq(schema.schemaChecks.id, latestCheck[0].schemaCheckId))
@@ -599,6 +606,8 @@ export class ProposalRepository {
     const hasLintErrors = Boolean(check[0].hasLintErrors);
     const hasGraphPruningErrors = Boolean(check[0].hasGraphPruningErrors);
     const clientTrafficCheckSkipped = Boolean(check[0].clientTrafficCheckSkipped);
+    const checkExtensionDeliveryId = check[0].checkExtensionDeliveryId || undefined;
+    const checkExtensionErrorMessage = check[0].checkExtensionErrorMessage || undefined;
 
     const schemaCheckRepo = new SchemaCheckRepository(this.db);
     const linkedChecks = await schemaCheckRepo.getLinkedSchemaChecks({
@@ -622,6 +631,8 @@ export class ProposalRepository {
       hasProposalMatchError: false,
       isLinkedTrafficCheckFailed,
       isLinkedPruningCheckFailed,
+      checkExtensionDeliveryId,
+      checkExtensionErrorMessage,
     });
 
     return {

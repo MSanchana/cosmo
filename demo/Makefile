@@ -25,7 +25,7 @@ plugin-build-ci-bun-binary:
 	$(wgc_router_ci) plugin build ./pkg/subgraphs/courses --yes
 
 plugin-build-ci-go-binary:
-	$(wgc_router_ci) plugin build ./pkg/subgraphs/projects --yes
+	$(wgc_router_ci) plugin build ./pkg/subgraphs/projects --yes --go-module-path github.com/wundergraph/cosmo/demo/pkg/subgraphs/projects
 
 plugin-compose:
 	$(wgc_router) compose -i ./graph-with-plugin.yaml -o ./configWithPlugins.json
@@ -50,3 +50,10 @@ standalone-compose:
 
 standalone-integration: standalone-compose
 	mv ./configWithStandalone.json ../router-tests/testenv/testdata/configWithGRPC.json
+
+.PHONY: build-manifest build-manifest-integration
+build-manifest:
+	python3 build_manifest.py --router-config ./config.json --out ./manifest --cleanup
+
+build-manifest-integration:
+	python3 build_manifest.py --router-config ./config.json --out ../router-tests/testenv/testdata/manifest --cleanup

@@ -6,8 +6,10 @@ import { eq } from 'drizzle-orm';
 import { PostgresJsDatabase } from 'drizzle-orm/postgres-js';
 import pino from 'pino';
 import { v4 } from 'uuid';
-import z from 'zod';
+import * as z from 'zod';
 import { LintSeverity, VCSContext } from '@wundergraph/cosmo-connect/dist/platform/v1/platform_pb';
+import { HttpProxyAgent } from 'http-proxy-agent';
+import { HttpsProxyAgent } from 'https-proxy-agent';
 import * as schema from '../../db/schema.js';
 import { FederatedGraphRepository } from '../repositories/FederatedGraphRepository.js';
 import { OrganizationRepository } from '../repositories/OrganizationRepository.js';
@@ -20,31 +22,34 @@ import {
   NamespaceDTO,
   SchemaGraphPruningIssues,
   SchemaLintIssues,
-  SubgraphDTO,
 } from '../../types/index.js';
-import { ComposedFederatedGraph } from '../composition/composer.js';
+import { DeserializedComposedGraph } from '../composition/composeGraphs.pool.js';
 import { GetDiffBetweenGraphsSuccess } from '../composition/schemaCheck.js';
 import { SubgraphCheckExtensionsRepository } from '../repositories/SubgraphCheckExtensionsRepository.js';
 import { BlobStorage } from '../blobstorage/index.js';
 import { audiences, nowInSeconds, signJwtHS256 } from '../crypto/jwt.js';
 import { InspectorOperationResult } from '../services/SchemaUsageTrafficInspector.js';
+import { traced } from '../tracing.js';
 import { makeWebhookRequest } from './utils.js';
 
 const subgraphCheckExtensionSchema = z.object({
   errors: z.array(z.string()).optional(),
   lintIssues: z
-    .array(
-      z.object({
-        lintRuleType: z.string().trim(),
-        severity: z.nativeEnum(LintSeverity),
-        message: z.string().trim(),
-        issueLocation: z.object({
-          line: z.number().int().positive(),
-          column: z.number().int().positive(),
-          endLine: z.number().int().positive().optional(),
-          endColumn: z.number().int().positive().optional(),
+    .record(
+      z.string(),
+      z.array(
+        z.object({
+          lintRuleType: z.string().trim(),
+          severity: z.nativeEnum(LintSeverity),
+          message: z.string().trim(),
+          issueLocation: z.object({
+            line: z.number().int().positive(),
+            column: z.number().int().positive(),
+            endLine: z.number().int().positive().optional(),
+            endColumn: z.number().int().positive().optional(),
+          }),
         }),
-      }),
+      ),
     )
     .optional(),
 });
@@ -56,6 +61,7 @@ export interface FederatedGraphSchemaUpdate {
       id: string;
       name: string;
       namespace: string;
+      composedSchemaVersionId?: string;
     };
     organization: {
       id: string;
@@ -116,6 +122,7 @@ type Config = {
   type: 'webhook' | 'slack';
 };
 
+@traced
 export class OrganizationWebhookService {
   private readonly logger: pino.Logger;
   private readonly defaultBillingPlanId?: string;
@@ -126,11 +133,26 @@ export class OrganizationWebhookService {
     private organizationId: string,
     logger: pino.Logger,
     defaultBillingPlanId?: string,
+    proxyUrl?: string,
   ) {
     this.logger = logger.child({ organizationId });
     this.defaultBillingPlanId = defaultBillingPlanId;
 
+    let httpAgent: HttpProxyAgent<string> | undefined;
+    let httpsAgent: HttpsProxyAgent<string> | undefined;
+    if (proxyUrl) {
+      try {
+        httpAgent = new HttpProxyAgent(proxyUrl, {});
+        httpsAgent = new HttpsProxyAgent(proxyUrl, {});
+      } catch (e) {
+        logger.error(e, 'Failed to create proxy agent');
+      }
+    }
+
     this.httpClient = axios.create({
+      httpAgent,
+      httpsAgent,
+      proxy: false,
       timeout: 30_000,
       maxContentLength: 5 * 1024 * 1024, // ~5mb
     });
@@ -320,7 +342,7 @@ export class OrganizationWebhookService {
               type: 'section',
               text: {
                 type: 'mrkdwn',
-                text: `🚀 Schema of the federated graph *<${process.env.WEB_BASE_URL}/${eventData.payload.organization.slug}/${graph.namespace}/graph/${graph.name} | ${graph.name}>* has been updated 🎉`,
+                text: `🚀 Schema of the federated graph *<${process.env.WEB_BASE_URL}/${eventData.payload.organization.slug}/${graph.namespace}/graph/${graph.name} | ${graph.name}>* in *${graph.namespace}* namespace has been updated 🎉`,
               },
             },
           ],
@@ -570,8 +592,7 @@ export class OrganizationWebhookService {
       await this.sendEvent(eventData, configs, actorId);
     } catch (e: any) {
       const logger = this.logger.child({ eventName: OrganizationEventName[eventData.eventName] });
-      logger.child({ message: e.message });
-      logger.error(`Could not send webhook event`);
+      logger.error(e, 'Could not send webhook event');
     }
   }
 
@@ -584,19 +605,24 @@ export class OrganizationWebhookService {
     organization: { id: string; slug: string };
     namespace: NamespaceDTO;
     vcsContext: VCSContext | undefined;
-    subgraph: SubgraphDTO | undefined;
-    newSchemaSDL: string;
-    isDeleted: boolean;
+    subgraphs: {
+      id: string;
+      name: string;
+      labels: Label[];
+      schemaChanges: GetDiffBetweenGraphsSuccess;
+      lintIssues: SchemaLintIssues;
+      pruneIssues: SchemaGraphPruningIssues;
+      schemaSDL: string;
+      newSchemaSDL: string;
+      isDeleted: boolean;
+    }[];
     affectedGraphs: FederatedGraphDTO[];
-    composedGraphs: ComposedFederatedGraph[];
-    schemaChanges: GetDiffBetweenGraphsSuccess;
-    lintIssues: SchemaLintIssues;
-    pruneIssues: SchemaGraphPruningIssues;
+    composedGraphs: DeserializedComposedGraph[];
     inspectedOperations: InspectorOperationResult[];
   }): Promise<
     | {
         deliveryInfo: WebhookDeliveryInfo;
-        additionalLintIssues: LintIssueResult[];
+        lintIssuesBySubgraph: Map<string, LintIssueResult[]>;
       }
     | undefined
   > {
@@ -628,15 +654,17 @@ export class OrganizationWebhookService {
 
     // Compose the contents of the file that we'll provide to the webhook
     const fileContent: Record<string, unknown> = {};
-    if (input.subgraph) {
-      fileContent.subgraphs = [
-        {
-          id: input.subgraph.id,
-          name: input.subgraph.name,
-          newComposedSdl: sceConfig.includeLintingIssues ? input.newSchemaSDL : undefined,
-          oldComposedSdl: sceConfig.includeLintingIssues ? input.subgraph.schemaSDL : undefined,
-        },
-      ];
+    if (input.subgraphs.length > 0) {
+      fileContent.subgraphs = input.subgraphs.map((subgraph) => ({
+        id: subgraph.id,
+        name: subgraph.name,
+        labels: subgraph.labels,
+        newComposedSdl: sceConfig.includeComposedSdl ? subgraph.newSchemaSDL : undefined,
+        oldComposedSdl: sceConfig.includeComposedSdl ? subgraph.schemaSDL : undefined,
+        lintIssues: sceConfig.includeLintingIssues ? subgraph.lintIssues : undefined,
+        pruningIssues: sceConfig.includePruningIssues ? subgraph.pruneIssues : undefined,
+        schemaChanges: sceConfig.includeSchemaChanges ? subgraph.schemaChanges : undefined,
+      }));
     }
 
     if (sceConfig.includeComposedSdl) {
@@ -648,18 +676,6 @@ export class OrganizationWebhookService {
       }));
     }
 
-    if (sceConfig.includeLintingIssues) {
-      fileContent.lintIssues = [...input.lintIssues.warnings, ...input.lintIssues.errors];
-    }
-
-    if (sceConfig.includePruningIssues) {
-      fileContent.pruningIssues = [...input.pruneIssues.warnings, ...input.pruneIssues.errors];
-    }
-
-    if (sceConfig.includeSchemaChanges) {
-      fileContent.schemaChanges = input.schemaChanges.changes;
-    }
-
     if (sceConfig.includeAffectedOperations) {
       fileContent.affectedOperations = input.inspectedOperations;
     }
@@ -668,11 +684,11 @@ export class OrganizationWebhookService {
     let url: string | undefined;
     if (Object.keys(fileContent).length > 0) {
       // Only upload the file if at least one option is enabled
-      const blobKey = `/${input.organization.id}/subgraph_checks/${v4()}.json`;
+      const blobKey = `${input.organization.id}/subgraph_checks/${v4()}.json`;
       const blobContent = JSON.stringify(fileContent);
       await input.blobStorage.putObject({
         key: blobKey,
-        contentType: 'application/json',
+        contentType: 'application/json; charset=utf-8',
         body: Buffer.from(blobContent, 'utf8'),
       });
 
@@ -685,14 +701,14 @@ export class OrganizationWebhookService {
         },
       });
 
-      url = `${input.admissionConfig.cdnBaseUrl}${blobKey}?token=${token}`;
+      url = `${input.admissionConfig.cdnBaseUrl}/${blobKey}?token=${token}`;
     }
 
     // Compose the webhook payload
     const payload: Record<string, unknown> = {
       actorId: input.actorId,
       checkId: input.schemaCheckID,
-      labels: input.subgraph ? undefined : input.labels,
+      labels: input.labels,
       organization: input.organization,
       namespace: { id: input.namespace.id, name: input.namespace.name },
       vcsContext: input.vcsContext,
@@ -703,14 +719,13 @@ export class OrganizationWebhookService {
       url,
     };
 
-    if (input.subgraph) {
-      payload.subgraphs = [
-        {
-          id: input.subgraph.id,
-          name: input.subgraph.name,
-          isDeleted: input.isDeleted,
-        },
-      ];
+    if (input.subgraphs.length > 0) {
+      payload.subgraphs = input.subgraphs.map((sg) => ({
+        id: sg.id,
+        name: sg.name,
+        labels: sg.labels,
+        isDeleted: sg.isDeleted,
+      }));
     }
 
     // Deliver the webhook
@@ -732,13 +747,13 @@ export class OrganizationWebhookService {
       this.logger,
     );
 
+    let lintIssuesBySubgraph: Map<string, LintIssueResult[]> = new Map<string, LintIssueResult[]>();
     if (!response?.data) {
-      return { deliveryInfo, additionalLintIssues: [] };
+      return { deliveryInfo, lintIssuesBySubgraph };
     }
 
     // Validate the response and maybe overwrite the error message based on it
     let overwriteErrorMessage = false;
-    let additionalLintIssues: LintIssueResult[] = [];
 
     if (response?.status !== 200 && response?.status !== 204) {
       // We expect the response status to be either 200 (OK) or 204 (No Content)
@@ -754,8 +769,13 @@ export class OrganizationWebhookService {
           deliveryInfo.errorMessage = parsedResponse.data.errors.filter(Boolean).join('\n');
         }
 
-        if (Array.isArray(parsedResponse.data.lintIssues)) {
-          additionalLintIssues = parsedResponse.data.lintIssues as LintIssueResult[];
+        if (typeof parsedResponse.data.lintIssues === 'object') {
+          try {
+            const lintIssuesRecord = parsedResponse.data.lintIssues as Record<string, LintIssueResult[]>;
+            lintIssuesBySubgraph = new Map(Object.entries(lintIssuesRecord));
+          } catch {
+            // ignore
+          }
         }
       } else {
         overwriteErrorMessage = true;
@@ -764,7 +784,7 @@ export class OrganizationWebhookService {
     }
 
     if (overwriteErrorMessage) {
-      // The error message was overwritten by the response, either the response provided an error message
+      // The response overwrote the error message, either the response provided an error message
       // or the data validation failed
       await this.db
         .update(schema.webhookDeliveries)
@@ -774,6 +794,6 @@ export class OrganizationWebhookService {
     }
 
     // We are done!
-    return { deliveryInfo, additionalLintIssues };
+    return { deliveryInfo, lintIssuesBySubgraph };
   }
 }

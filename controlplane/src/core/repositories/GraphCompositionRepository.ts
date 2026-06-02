@@ -11,9 +11,11 @@ import {
   users,
 } from '../../db/schema.js';
 import { DateRange, GraphCompositionDTO } from '../../types/index.js';
-import { ComposedSubgraph } from '../composition/composer.js';
+import { CompositionSubgraphRecord } from '../composition/composer.js';
+import { traced } from '../tracing.js';
 import { FederatedGraphRepository } from './FederatedGraphRepository.js';
 
+@traced
 export class GraphCompositionRepository {
   constructor(
     private logger: FastifyBaseLogger,
@@ -38,7 +40,7 @@ export class GraphCompositionRepository {
     compositionErrorString: string;
     compositionWarningString: string;
     routerConfigSignature?: string;
-    composedSubgraphs: ComposedSubgraph[];
+    composedSubgraphs: CompositionSubgraphRecord[];
     composedById: string;
     admissionErrorString?: string;
     deploymentErrorString?: string;
@@ -232,6 +234,7 @@ export class GraphCompositionRepository {
     return {
       id: composition.id,
       schemaVersionId: composition.schemaVersionId,
+      targetId: composition.targetId,
       createdAt: composition.createdAt.toISOString(),
       isComposable: composition.isComposable || false,
       compositionErrors: composition.compositionErrors || undefined,
@@ -292,6 +295,7 @@ export class GraphCompositionRepository {
     return {
       id: composition.id,
       schemaVersionId: composition.schemaVersionId,
+      targetId: composition.targetId,
       createdAt: composition.createdAt.toISOString(),
       isComposable: composition.isComposable || false,
       compositionErrors: composition.compositionErrors || undefined,

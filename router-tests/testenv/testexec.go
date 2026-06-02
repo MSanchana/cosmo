@@ -3,6 +3,7 @@ package testenv
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -19,8 +20,6 @@ import (
 
 	"github.com/wundergraph/cosmo/router-tests/freeport"
 )
-
-const routerDir = "../router"
 
 var (
 	buildOnce sync.Once
@@ -82,15 +81,16 @@ func buildRouterBin(t *testing.T, ctx context.Context) {
 	buildOnce.Do(func() {
 		t.Log("Building router binary...")
 
+		rDir := filepath.Join(routerTestsDir, "..", "router")
 		cmd := exec.Command("make", "build-race")
-		cmd.Dir = routerDir
+		cmd.Dir = rDir
 		err := runCmdWithLogs(t, ctx, cmd, true, nil) // Run the build command
 		if err != nil {
 			t.Fatalf("failed to execute runCmdWithLogs: %v", err)
 		}
 
 		// Determine the binary path after successful build
-		binPath := filepath.Join(routerDir, "router") // Adjust if needed for Windows
+		binPath := filepath.Join(rDir, "router")
 		require.FileExists(t, binPath, "Router binary was not found after build")
 
 		routerBin = binPath // Store the path for reuse
@@ -212,8 +212,18 @@ func runCmdWithLogs(t *testing.T, ctx context.Context, cmd *exec.Cmd, waitToComp
 	cmd.Stdout = w
 	cmd.Stderr = w
 
-	// Capture output in real-time
+	done := make(chan struct{})
+	// Closing the pipe makes scanner.Scan return, which lets the goroutine exit
+	// before the test finishes. Without this guard the goroutine can race the
+	// test's own Cleanup/defers by calling t.Log after the test has returned.
+	t.Cleanup(func() {
+		_ = w.Close()
+		_ = r.Close()
+		<-done
+	})
+
 	go func() {
+		defer close(done)
 		scanner := bufio.NewScanner(r)
 		for scanner.Scan() {
 			line := scanner.Text()
@@ -236,7 +246,7 @@ func runCmdWithLogs(t *testing.T, ctx context.Context, cmd *exec.Cmd, waitToComp
 				}
 			}
 		}
-		if err := scanner.Err(); err != nil {
+		if err := scanner.Err(); err != nil && !errors.Is(err, io.ErrClosedPipe) {
 			t.Logf("error reading output: %v", err)
 		}
 	}()

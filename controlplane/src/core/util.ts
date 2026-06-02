@@ -1,6 +1,8 @@
 import { randomFill } from 'node:crypto';
+import { isIPv4, isIPv6 } from 'node:net';
 import { S3ClientConfig } from '@aws-sdk/client-s3';
-import { HandlerContext } from '@connectrpc/connect';
+import { Code, ConnectError, HandlerContext } from '@connectrpc/connect';
+import * as Sentry from '@sentry/node';
 import {
   GraphQLSubscriptionProtocol,
   GraphQLWebsocketSubprotocol,
@@ -9,32 +11,39 @@ import { joinLabel, splitLabel } from '@wundergraph/cosmo-shared';
 import { AxiosError } from 'axios';
 import { isNetworkError, isRetryableError } from 'axios-retry';
 import { formatISO, subHours } from 'date-fns';
+import { inArray, SQL } from 'drizzle-orm';
+import { PgColumn } from 'drizzle-orm/pg-core';
 import { FastifyBaseLogger } from 'fastify';
 import { parse, visit } from 'graphql';
 import { uid } from 'uid/secure';
 import DOMPurify from 'isomorphic-dompurify';
-import {
-  ContractTagOptions,
-  FederationResult,
-  FederationResultWithContracts,
-  LATEST_ROUTER_COMPATIBILITY_VERSION,
-  newContractTagOptionsFromArrays,
-} from '@wundergraph/composition';
-import { SubgraphType, ProposalOrigin } from '@wundergraph/cosmo-connect/dist/platform/v1/platform_pb';
-import { MemberRole, WebsocketSubprotocol, ProposalOrigin as ProposalOriginEnum } from '../db/models.js';
+import { LATEST_ROUTER_COMPATIBILITY_VERSION } from '@wundergraph/composition';
+import { ProposalOrigin, SubgraphType } from '@wundergraph/cosmo-connect/dist/platform/v1/platform_pb';
+import { MemberRole, ProposalOrigin as ProposalOriginEnum, WebsocketSubprotocol } from '../db/models.js';
 import {
   AuthContext,
-  CompositionOptions,
   DateRange,
   FederatedGraphDTO,
   Label,
+  LoginMethod,
+  NamespaceAccess,
   ResponseMessage,
   S3StorageOptions,
+  SOCIAL_LOGIN_PROVIDERS,
+  SocialLoginProvider,
 } from '../types/index.js';
-import { isAuthenticationError, isAuthorizationError, isPublicError } from './errors/errors.js';
+import { paginationDefaults } from './constants.js';
+import {
+  isAuthenticationError,
+  isAuthorizationError,
+  isClickHouseUnavailableError,
+  isPublicError,
+} from './errors/errors.js';
 import { GraphKeyAuthContext } from './services/GraphApiTokenAuthenticator.js';
-import { composeFederatedContract, composeFederatedGraphWithPotentialContracts } from './composition/composition.js';
-import { SubgraphsToCompose } from './repositories/FeatureFlagRepository.js';
+import { RBACEvaluator } from './services/RBACEvaluator.js';
+import type { OidcRepository } from './repositories/OidcRepository.js';
+import type { OrganizationRepository } from './repositories/OrganizationRepository.js';
+import type { NamespaceSsoMappingRepository } from './repositories/NamespaceSsoMappingRepository.js';
 
 const labelRegex = /^[\dA-Za-z](?:[\w.-]{0,61}[\dA-Za-z])?$/;
 const namespaceRegex = /^[\da-z]+(?:[_-][\da-z]+)*$/;
@@ -79,6 +88,9 @@ export async function handleError<T extends ResponseMessage>(
           details: error.message,
         },
       } as T;
+    } else if (isClickHouseUnavailableError(error)) {
+      logger.error(error);
+      throw new ConnectError(error.message, Code.Unavailable);
     }
 
     logger.error(error);
@@ -88,6 +100,7 @@ export async function handleError<T extends ResponseMessage>(
 }
 
 export const fastifyLoggerId = Symbol('logger');
+export const sentrySpanId = Symbol('sentrySpan');
 
 export const getLogger = (ctx: HandlerContext, defaultLogger: FastifyBaseLogger) => {
   return ctx.values.get<FastifyBaseLogger>({ id: fastifyLoggerId, defaultValue: defaultLogger });
@@ -108,6 +121,25 @@ export const enrichLogger = (
   });
 
   ctx.values.set<FastifyBaseLogger>({ id: fastifyLoggerId, defaultValue: newLogger }, newLogger);
+
+  Sentry.setUser({
+    id: authContext.userId,
+    username: authContext.userDisplayName,
+  });
+
+  const spanAttributes = Object.fromEntries(
+    Object.entries({
+      'user.id': authContext.userId,
+      'user.displayName': authContext.userDisplayName,
+      'organization.id': authContext.organizationId,
+      'organization.slug': authContext.organizationSlug,
+    }).filter(([, v]) => v),
+  );
+
+  const activeSpan = Sentry.getActiveSpan();
+  if (activeSpan) {
+    Sentry.getRootSpan(activeSpan).setAttributes(spanAttributes);
+  }
 
   return newLogger;
 };
@@ -549,29 +581,6 @@ export const checkIfLabelMatchersChanged = (data: {
   return false;
 };
 
-export function getFederationResultWithPotentialContracts(
-  federatedGraph: FederatedGraphDTO,
-  subgraphsToCompose: SubgraphsToCompose,
-  tagOptionsByContractName: Map<string, ContractTagOptions>,
-  compositionOptions?: CompositionOptions,
-): FederationResult | FederationResultWithContracts {
-  // This condition is only true when entering the method to specifically create/update a contract
-  if (federatedGraph.contract) {
-    return composeFederatedContract(
-      subgraphsToCompose.compositionSubgraphs,
-      newContractTagOptionsFromArrays(federatedGraph.contract.excludeTags, federatedGraph.contract.includeTags),
-      federatedGraph.routerCompatibilityVersion,
-      compositionOptions,
-    );
-  }
-  return composeFederatedGraphWithPotentialContracts(
-    subgraphsToCompose.compositionSubgraphs,
-    tagOptionsByContractName,
-    federatedGraph.routerCompatibilityVersion,
-    compositionOptions,
-  );
-}
-
 export function getFederatedGraphRouterCompatibilityVersion(federatedGraphDTOs: Array<FederatedGraphDTO>): string {
   if (federatedGraphDTOs.length === 0) {
     return LATEST_ROUTER_COMPATIBILITY_VERSION;
@@ -581,6 +590,23 @@ export function getFederatedGraphRouterCompatibilityVersion(federatedGraphDTOs: 
 
 export function clamp(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), max);
+}
+
+/**
+ * Normalizes pagination parameters by applying defaults and clamping to safe bounds.
+ * Uses the standard pagination defaults from constants unless overridden.
+ */
+export function normalizePagination(
+  opts: { limit?: number; offset?: number },
+  overrides?: { maxLimit?: number; maxOffset?: number },
+): { limit: number; offset: number } {
+  const maxLimit = overrides?.maxLimit ?? paginationDefaults.maxLimit;
+  const maxOffset = overrides?.maxOffset ?? paginationDefaults.maxOffset;
+
+  return {
+    limit: clamp(opts.limit || paginationDefaults.defaultLimit, paginationDefaults.minLimit, maxLimit),
+    offset: clamp(opts.offset || 0, paginationDefaults.minOffset, maxOffset),
+  };
 }
 
 export const isCheckSuccessful = ({
@@ -593,6 +619,8 @@ export const isCheckSuccessful = ({
   hasProposalMatchError,
   isLinkedTrafficCheckFailed,
   isLinkedPruningCheckFailed,
+  checkExtensionDeliveryId,
+  checkExtensionErrorMessage,
 }: {
   isComposable: boolean;
   isBreaking: boolean;
@@ -603,9 +631,15 @@ export const isCheckSuccessful = ({
   hasProposalMatchError: boolean;
   isLinkedTrafficCheckFailed?: boolean;
   isLinkedPruningCheckFailed?: boolean;
+  checkExtensionDeliveryId?: string;
+  checkExtensionErrorMessage?: string;
 }) => {
   // if a subgraph is linked to another subgraph, then the status of the check depends on the traffic and pruning check of the linked subgraph
   if (isLinkedTrafficCheckFailed || isLinkedPruningCheckFailed) {
+    return false;
+  }
+
+  if (checkExtensionDeliveryId && checkExtensionErrorMessage) {
     return false;
   }
 
@@ -664,15 +698,6 @@ export const convertToSubgraphType = (type: string) => {
   }
 };
 
-export function newCompositionOptions(disableResolvabilityValidation?: boolean): CompositionOptions | undefined {
-  if (!disableResolvabilityValidation) {
-    return;
-  }
-  return {
-    disableResolvabilityValidation,
-  };
-}
-
 export function toProposalOriginEnum(value: ProposalOrigin): ProposalOriginEnum {
   switch (value) {
     case ProposalOrigin.EXTERNAL: {
@@ -720,4 +745,290 @@ export function isValidLocalhostOrSecureEndpoint(value: string) {
   }
 
   return isValid;
+}
+
+function isValidPort(port: string | undefined): boolean {
+  if (port === undefined) {
+    return true;
+  }
+  if (!/^\d+$/.test(port)) {
+    return false;
+  }
+  const portNum = Number.parseInt(port, 10);
+  // Valid port range is 1-65535 (port 0 is reserved)
+  return portNum >= 1 && portNum <= 65_535;
+}
+
+function isValidHostname(hostname: string): boolean {
+  if (!hostname || hostname.length > 253) {
+    return false;
+  }
+  const labels = hostname.split('.');
+  return labels.every((label) => /^[\da-z](?:[\da-z-]{0,61}[\da-z])?$/i.test(label));
+}
+
+function isValidHostOrIpv4(host: string): boolean {
+  return isIPv4(host) || isValidHostname(host);
+}
+
+function isValidHostPort(target: string): boolean {
+  if (!target || target.includes('/')) {
+    return false;
+  }
+  const lastColonIndex = target.lastIndexOf(':');
+  if (lastColonIndex === -1) {
+    return isValidHostOrIpv4(target);
+  }
+  if (target.indexOf(':') !== lastColonIndex) {
+    return false;
+  }
+  const host = target.slice(0, lastColonIndex);
+  const port = target.slice(lastColonIndex + 1);
+  if (!host || !port) {
+    return false;
+  }
+  return isValidHostOrIpv4(host) && isValidPort(port);
+}
+
+function isValidDnsTarget(rest: string): boolean {
+  if (!rest) {
+    return false;
+  }
+  if (rest.startsWith('//')) {
+    const remainder = rest.slice(2);
+    if (!remainder) {
+      return false;
+    }
+    const slashIndex = remainder.indexOf('/');
+    const endpoint = slashIndex === -1 ? remainder : remainder.slice(slashIndex + 1);
+    return isValidHostPort(endpoint);
+  }
+  return isValidHostPort(rest);
+}
+
+/**
+ * Validates if a routing URL is using one of the supported gRPC naming schemes.
+ * Supported schemes: dns:, unix:, unix-abstract:, vsock:, ipv4:, ipv6:
+ */
+export function isValidGrpcNamingScheme(url: string): boolean {
+  const value = url.trim();
+  if (!value) {
+    return false;
+  }
+
+  const supportedSchemes = new Set(['dns', 'unix', 'unix-abstract', 'vsock', 'ipv4', 'ipv6']);
+  const schemeMatch = /^([a-z][\d+.a-z-]*):/i.exec(value);
+  if (!schemeMatch) {
+    return isValidDnsTarget(value);
+  }
+
+  const scheme = schemeMatch[1].toLowerCase();
+  const rest = value.slice(schemeMatch[0].length);
+  if (!supportedSchemes.has(scheme)) {
+    return isValidDnsTarget(value);
+  }
+
+  switch (scheme) {
+    case 'dns': {
+      if (rest.startsWith('//')) {
+        const remainder = rest.slice(2);
+        const slashIndex = remainder.indexOf('/');
+        if (slashIndex === -1) {
+          return false; // No host:port path found
+        }
+        const endpoint = remainder.slice(slashIndex + 1);
+        if (!endpoint) {
+          return false; // Empty endpoint after slash
+        }
+        return isValidHostPort(endpoint);
+      }
+      return isValidDnsTarget(rest);
+    }
+    case 'unix': {
+      if (!rest) {
+        return false;
+      }
+      let path = rest;
+      if (rest.startsWith('//')) {
+        const remainder = rest.slice(2);
+        const slashIndex = remainder.indexOf('/');
+        path = slashIndex === -1 ? '' : remainder.slice(slashIndex);
+      }
+      return path.length > 0 && path !== '/';
+    }
+    case 'unix-abstract': {
+      return rest.length > 0;
+    }
+    case 'vsock': {
+      const parts = rest.split(':');
+      if (parts.length !== 2) {
+        return false;
+      }
+      const [cid, port] = parts;
+      if (!/^\d+$/.test(cid) || !/^\d+$/.test(port)) {
+        return false;
+      }
+      // Validate port range (1-65535)
+      return isValidPort(port);
+    }
+    case 'ipv4': {
+      if (!rest) {
+        return false;
+      }
+      const endpoints = rest.split(',').map((endpoint) => endpoint.trim());
+      return endpoints.every((endpoint) => {
+        if (!endpoint) {
+          return false;
+        }
+        const lastColonIndex = endpoint.lastIndexOf(':');
+        if (lastColonIndex === -1) {
+          return isIPv4(endpoint);
+        }
+        if (endpoint.indexOf(':') !== lastColonIndex) {
+          return false;
+        }
+        const host = endpoint.slice(0, lastColonIndex);
+        const port = endpoint.slice(lastColonIndex + 1);
+        return isIPv4(host) && isValidPort(port);
+      });
+    }
+    case 'ipv6': {
+      if (!rest) {
+        return false;
+      }
+      const endpoints = rest.split(',').map((endpoint) => endpoint.trim());
+      return endpoints.every((endpoint) => {
+        if (!endpoint) {
+          return false;
+        }
+        if (endpoint.startsWith('[')) {
+          const closingIndex = endpoint.indexOf(']');
+          if (closingIndex === -1) {
+            return false;
+          }
+          const address = endpoint.slice(1, closingIndex);
+          if (!isIPv6(address)) {
+            return false;
+          }
+          const portPart = endpoint.slice(closingIndex + 1);
+          if (!portPart) {
+            return true;
+          }
+          if (!portPart.startsWith(':')) {
+            return false;
+          }
+          return isValidPort(portPart.slice(1));
+        }
+        return isIPv6(endpoint);
+      });
+    }
+    default: {
+      return false;
+    }
+  }
+}
+
+/**
+ * Applies the IdP namespace gate to a list-query's WHERE conditions, based on
+ * the actor's {@link NamespaceAccess}:
+ *
+ * - `all`        → pushes nothing, returns `true`.
+ * - `none`       → returns `false`; the caller must short-circuit with its own
+ *                  "no rows" value (`[]`, `0`, `false`, …) instead of querying.
+ * - `restricted` → pushes `namespaceColumn IN (...)`, returns `true`.
+ *
+ * `namespaceColumn` is the namespace-id column of the query's FROM table, which
+ * differs per caller (e.g. `targets.namespaceId`, `namespaces.id`,
+ * `featureFlags.namespaceId`).
+ */
+export function applyIdpNamespaceGate(
+  rbac: RBACEvaluator | undefined,
+  namespaceColumn: PgColumn,
+  conditions: (SQL<unknown> | undefined)[],
+): boolean {
+  const access = rbac?.idpNamespaceAccess ?? { kind: 'all' };
+  switch (access.kind) {
+    case 'all': {
+      return true;
+    }
+    case 'none': {
+      return false;
+    }
+    case 'restricted': {
+      conditions.push(inArray(namespaceColumn, [...access.namespaceIds]));
+      return true;
+    }
+  }
+}
+
+/**
+ * Derives the full auth state for an interactive (web-session or access-token)
+ * login from the session's IdP alias:
+ *  1. Resolves the login method — a custom OIDC app when the alias matches an
+ *     org provider, otherwise password (no IdP, or an alias whose provider no
+ *     longer belongs to the org, so default-open namespaces stay reachable).
+ *  2. Applies the IdP namespace gate for that login method.
+ *  3. Builds the RBAC evaluator from the org's member groups plus the gate.
+ *
+ * Returns the login method and the evaluator. The namespace gate is baked into
+ * the evaluator (`rbac.idpNamespaceAccess`), which is the single source of
+ * truth for it. Shared by both authenticators.
+ */
+export async function buildAuthState(
+  deps: {
+    oidcRepo: OidcRepository;
+    orgRepo: OrganizationRepository;
+    namespaceSsoMappingRepo: NamespaceSsoMappingRepository;
+  },
+  input: { organizationId: string; userId: string; idpAlias: string | null | undefined },
+): Promise<{ loginMethod: LoginMethod; rbac: RBACEvaluator }> {
+  let loginMethod: LoginMethod = { type: 'password' };
+  if (input.idpAlias) {
+    const provider = await deps.oidcRepo.getOidcProviderByAlias({
+      alias: input.idpAlias,
+      organizationId: input.organizationId,
+    });
+    if (provider) {
+      loginMethod = { type: 'sso', ssoProviderId: provider.id, alias: input.idpAlias };
+    } else if (isSocialLoginProvider(input.idpAlias)) {
+      loginMethod = { type: 'social', provider: input.idpAlias, alias: input.idpAlias };
+    }
+  }
+
+  const namespaceAccess = await deps.namespaceSsoMappingRepo.allowedNamespaces({
+    organizationId: input.organizationId,
+    loginMethod,
+  });
+
+  const rbac = new RBACEvaluator(
+    await deps.orgRepo.getOrganizationMemberGroups({
+      organizationID: input.organizationId,
+      userID: input.userId,
+    }),
+    input.userId,
+    /* isApiKey */ false,
+    namespaceAccess,
+  );
+
+  return { loginMethod, rbac };
+}
+
+/** Whether a specific namespace is reachable under the given {@link NamespaceAccess}. */
+export function isNamespaceAllowed(access: NamespaceAccess, namespaceId: string): boolean {
+  switch (access.kind) {
+    case 'all': {
+      return true;
+    }
+    case 'none': {
+      return false;
+    }
+    case 'restricted': {
+      return access.namespaceIds.has(namespaceId);
+    }
+  }
+}
+
+/** Whether the given IdP alias is one of Keycloak's built-in social brokers. */
+export function isSocialLoginProvider(alias: string): alias is SocialLoginProvider {
+  return (SOCIAL_LOGIN_PROVIDERS as readonly string[]).includes(alias);
 }

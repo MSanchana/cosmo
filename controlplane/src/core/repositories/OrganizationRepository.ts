@@ -26,6 +26,7 @@ import {
   users,
 } from '../../db/schema.js';
 import {
+  COMPOSITION_IGNORE_EXTERNAL_KEYS_FEATURE_ID,
   Feature,
   FeatureIds,
   OrganizationDTO,
@@ -39,6 +40,7 @@ import { BlobStorage } from '../blobstorage/index.js';
 import { delayForManualOrgDeletionInDays, delayForOrgAuditLogsDeletionInDays } from '../constants.js';
 import { DeleteOrganizationAuditLogsQueue } from '../workers/DeleteOrganizationAuditLogsWorker.js';
 import { RBACEvaluator } from '../services/RBACEvaluator.js';
+import { traced } from '../tracing.js';
 import { BillingRepository } from './BillingRepository.js';
 import { FederatedGraphRepository } from './FederatedGraphRepository.js';
 import { TargetRepository } from './TargetRepository.js';
@@ -47,6 +49,7 @@ import { OrganizationGroupRepository } from './OrganizationGroupRepository.js';
 /**
  * Repository for organization related operations.
  */
+@traced
 export class OrganizationRepository {
   protected billing: BillingRepository;
 
@@ -505,9 +508,27 @@ export class OrganizationRepository {
         organizationId: input.organizationID,
         active: true,
       })
+      .onConflictDoNothing()
       .returning()
       .execute();
-    return insertedMember[0];
+
+    if (insertedMember.length > 0) {
+      // The user wasn't part of the organization, so
+      return insertedMember[0];
+    }
+
+    const existingMember = await this.db
+      .select()
+      .from(organizationsMembers)
+      .where(
+        and(
+          eq(organizationsMembers.organizationId, input.organizationID),
+          eq(organizationsMembers.userId, input.userID),
+        ),
+      )
+      .execute();
+
+    return existingMember[0];
   }
 
   public setOrganizationMemberActive(input: { id: string; organizationId: string; active: boolean }) {
@@ -1387,16 +1408,19 @@ export class OrganizationRepository {
       plugins: 0,
       users: 25,
       requests: 30,
-      rbac: false,
-      sso: false,
-      security: false,
-      support: false,
-      oidc: false,
+      // Boolean features
       ai: false,
-      scim: false,
+      [COMPOSITION_IGNORE_EXTERNAL_KEYS_FEATURE_ID]: false,
       'cache-warmer': false,
+      oidc: false,
       proposals: false,
+      rbac: false,
+      scim: false,
+      security: false,
+      sso: false,
       'subgraph-check-extensions': false,
+      support: false,
+      'split-config-loading': false,
     };
 
     for (const feature of features) {
