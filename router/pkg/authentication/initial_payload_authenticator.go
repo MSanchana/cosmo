@@ -23,8 +23,8 @@ func (a *websocketInitialPayloadAuthenticator) Authenticate(ctx context.Context,
 	initialPayload := WebsocketInitialPayloadFromContext(ctx)
 	var errs error
 	if initialPayload == nil {
-		errs = errors.Join(errs, fmt.Errorf("could not validate token, initial payload is empty"))
-		return nil, errs
+		// No authentication information is available, return nil without any errors.
+		return nil, nil
 	}
 
 	var initialPayloadMap map[string]interface{}
