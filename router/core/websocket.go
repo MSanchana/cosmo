@@ -432,6 +432,10 @@ func (h *WebsocketHandler) handleUpgradeRequest(w http.ResponseWriter, r *http.R
 		requestContext.expressionContext.Request.Auth = expr.LoadAuth(handler.request.Context())
 	}
 
+	if auth := authentication.FromContext(handler.request.Context()); auth != nil {
+		handler.ctx = authentication.NewContext(handler.ctx, auth)
+	}
+
 	// Only when epoll/kqueue is available. On Windows, epoll is not available
 	if h.netPoll != nil {
 		err = h.addConnection(c, handler)
