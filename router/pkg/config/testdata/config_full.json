@@ -790,7 +790,8 @@
           "URL": "nats://localhost:4222",
           "Authentication": null,
           "TLS": null,
-          "DeleteDurableConsumersOnShutdown": false
+          "DeleteDurableConsumersOnShutdown": false,
+          "SubscriptionBufferSize": 0
         },
         {
           "ID": "my-nats",
@@ -803,7 +804,8 @@
             "Token": null
           },
           "TLS": null,
-          "DeleteDurableConsumersOnShutdown": false
+          "DeleteDurableConsumersOnShutdown": false,
+          "SubscriptionBufferSize": 0
         }
       ],
       "Kafka": [
